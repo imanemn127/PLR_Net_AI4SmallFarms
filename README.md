@@ -83,12 +83,12 @@ PLR-Net/
 │   │   ├── transforms.py         created: Resize/ToTensor/Normalize for Sentinel-2
 │   │   ├── train_dataset.py      rasterio TIF reader; np.int64 fix
 │   │   └── test_dataset.py       rewritten: same fields as TrainDataset, no augmentation
-│   ├── detector.py               forward_train() added with 5 losses
+│   ├── detector.py               forward_train() with 5 losses; Dropout2d(p=0.1) in heads
 │   ├── encoder.py                SyntaxError fix
 │   ├── solver.py
 │   └── utils/
 │       ├── model_zoo.py          torch.hub private symbols replaced
-│       ├── polygon.py            SyntaxError fix
+│       ├── polygon.py            SyntaxError fix; top-K reduced 600→300
 │       └── metrics/              cIoU, Polis, junction eval
 ├── scripts/
 │   ├── build_coco_dataset.py     Sentinel-2 TIF tiles → 256px COCO patches
@@ -242,6 +242,35 @@ weighted component losses (train), weighted component losses (val).
 tail -f OUTPUT_DIR/YYYY-MM-DD_HH-MM-SS/train.log
 watch -n 1 nvidia-smi
 ```
+
+---
+
+## Training history
+
+### Run 1 — baseline (150 epochs)
+
+| Loss | Train (epoch 1 → 150) | Val (epoch 1 → 150) |
+|------|----------------------|---------------------|
+| `loss_mask` | 0.54 → 0.08 | 0.47 → 0.72 |
+| `loss_jloc` | 4.07 → 0.33 | 0.46 → 0.49 |
+| `loss_remask` | 0.72 → 0.62 | ~0.69 (flat) |
+| `loss_afm` | 0.43 → 0.25 | ~0.41 (slow) |
+| `loss_joff` | 0.127 (flat) | 0.127 (flat) |
+| `val_total_loss` | — | rises after epoch 50: ~2.08 → ~2.40 |
+
+**Diagnosis:** massive overfitting on the mask and junction branches; AFM and offset
+branches learn almost nothing. No coherent polygons in validation visualisations.
+Root cause: only 98 training patches, no dropout, no D4 augmentation.
+
+### Run 2 — regularisation fixes (in progress)
+
+Three changes applied after run 1:
+
+| Change | Where | Why |
+|--------|-------|-----|
+| D4 augmentation enabled (`ROTATE_F: True`) | `config-files/PLR-Net.yaml` | 98 patches × 8 orientations = ~784 effective configs; fields have no preferred orientation |
+| `Dropout2d(p=0.1)` after each head | `PLRNet/detector.py` — `_make_conv` | Forces each channel to learn independently; applied to all 3 heads (mask, jloc, afm) |
+| Top-K junctions 600 → 300 | `PLRNet/utils/polygon.py` | Reduces false-positive junction candidates during post-processing; article value for the original dataset |
 
 ---
 

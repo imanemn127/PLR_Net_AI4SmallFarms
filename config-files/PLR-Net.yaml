@@ -24,8 +24,10 @@ DATASETS:
   ORIGIN:
     HEIGHT: 256
     WIDTH: 256
+  ROTATE_F: True   # enable full D4 augmentation (flips + 90/270 rotations)
   TRAIN: ("ai4sf_train",)
   TEST: ("ai4sf_val",)
+
 
 MODEL:
   NAME: "BsiNet_2"

@@ -267,6 +267,7 @@ class BuildingDetector(nn.Module):
             nn.Conv2d(dim_hid, dim_out, kernel_size=3, padding=1),
             nn.BatchNorm2d(dim_out),
             nn.ReLU(inplace=True),
+            nn.Dropout2d(p=0.1),  # added: reduce overfitting on small dataset
         )
         return layer
 
