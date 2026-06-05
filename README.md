@@ -262,15 +262,31 @@ watch -n 1 nvidia-smi
 branches learn almost nothing. No coherent polygons in validation visualisations.
 Root cause: only 98 training patches, no dropout, no D4 augmentation.
 
-### Run 2 — regularisation fixes (in progress)
+### Run 2 — regularisation fixes (stopped at epoch 88/150)
 
 Three changes applied after run 1:
 
 | Change | Where | Why |
 |--------|-------|-----|
-| D4 augmentation enabled (`ROTATE_F: True`) | `config-files/PLR-Net.yaml` | 98 patches × 8 orientations = ~784 effective configs; fields have no preferred orientation |
-| `Dropout2d(p=0.1)` after each head | `PLRNet/detector.py` — `_make_conv` | Forces each channel to learn independently; applied to all 3 heads (mask, jloc, afm) |
-| Top-K junctions 600 → 300 | `PLRNet/utils/polygon.py` | Reduces false-positive junction candidates during post-processing; article value for the original dataset |
+| D4 augmentation (`ROTATE_F: True`) | `config-files/PLR-Net.yaml` | 98 patches × 8 orientations = ~784 effective configs; fields have no preferred orientation |
+| `Dropout2d(p=0.1)` in heads | `PLRNet/detector.py` — `_make_conv` | Forces each channel to learn independently; applied to mask, jloc, afm heads |
+| Top-K junctions 600 → 300 | `PLRNet/utils/polygon.py` | Reduces false-positive junction candidates; article value for the original dataset |
+
+| Loss (weighted) | Train (ep 1 → 88) | Val (ep 5 → 85) |
+|------|-------------------|-----------------|
+| total | 6.09 → 1.91 | 2.18 → 2.12 |
+| `w_loss_mask` | 0.54 → 0.31 | 0.48 → 0.46 |
+| `w_loss_jloc` | 4.27 → 0.41 | 0.46 → 0.43 |
+| `w_loss_joff` | 0.127 → 0.122 | 0.123 → 0.119 |
+| `w_loss_afm` | 0.43 → 0.38 | 0.42 → 0.40 |
+| `w_loss_remask` | 0.72 → 0.68 | 0.69 → 0.71 |
+
+**Diagnosis:** The train/val gap is under control — D4 + Dropout successfully reduced overfitting
+on the mask branch. Visually, large rectangular shapes begin to appear on dense
+patches by epoch 50 and loosely follow field edges at epoch 85, but boundary
+precision remains poor and the model still produces many spurious polygons on sparse
+patches. The junction offset branch (`loss_joff`) is barely learning (0.127 → 0.122),
+which limits vertex placement accuracy and is the main bottleneck for polygon quality.
 
 ---
 
