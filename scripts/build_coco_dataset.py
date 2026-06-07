@@ -6,16 +6,16 @@ Build a COCO-format dataset of 256×256 pixel patches from AI4SmallFarms
 Sentinel-2 tiles (Asia subset), using reference polygon files (_areas.gpkg).
 
 Output:
-  sentinel-2-asia/output_coco_256/train_coco.json
-  sentinel-2-asia/output_coco_256/val_coco.json
-  sentinel-2-asia/output_coco_256/test_coco.json
+  /mnt/DATA/IMANE/PLR-Net/data/ai4sf_256px_area50/train/train_coco.json
+  /mnt/DATA/IMANE/PLR-Net/data/ai4sf_256px_area50/val/val_coco.json
+  /mnt/DATA/IMANE/PLR-Net/data/ai4sf_256px_area50/test/test_coco.json
 
 Each patch image is stored as a GeoTIFF cropped from the original tile.
 File names in the JSON follow the pattern:
   <split>/patches_256/<tile_id>_<row>_<col>.tif
 
 Usage:
-  /mnt/DATA/IMANE/ai4sf/bin/python build_coco_dataset.py
+  /mnt/DATA/IMANE/ai4sf/bin/python scripts/build_coco_dataset.py
 
 Set TEST_LIMIT to a small number (e.g. 2) to process only the first N tiles
 per split during development; set to None to process all tiles.
@@ -39,7 +39,7 @@ from tqdm import tqdm
 # ---------------------------------------------------------------------------
 
 SRC_ROOT = "/home/imane/DATA/AI4SmallFarms/sentinel-2-asia"  # read-only source
-DST_ROOT = "/mnt/DATA/IMANE/PLR-Net/data/ai4sf_256px_area100"        # all outputs go here
+DST_ROOT = "/mnt/DATA/IMANE/PLR-Net/data/ai4sf_256px_area50"        # all outputs go here
 
 PATCH_SIZE = 256        # patch size in pixels — 2.56 km × 2.56 km at 10 m/px
 STRIDE     = 256        # stride = patch size → contiguous, no overlap
@@ -50,7 +50,7 @@ CATEGORY   = {"id": 1, "name": "field"}
 TEST_LIMIT = None
 
 # Minimum polygon area (px²) to keep — filters out tiny slivers after clipping
-MIN_AREA_PX = 100
+MIN_AREA_PX = 50
 
 
 # ---------------------------------------------------------------------------
