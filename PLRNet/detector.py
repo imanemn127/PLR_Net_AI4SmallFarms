@@ -168,7 +168,7 @@ class BuildingDetector(nn.Module):
             'loss_afm'   : loss_afm,
             'loss_remask': loss_remask,
         }
-        return loss_dict, {}
+        return loss_dict, {'remask_pred': remask_pred[:, 1].detach()}  # expose refined mask logit for validation
 
     def forward_test(self, images, annotations=None):
         device = images.device

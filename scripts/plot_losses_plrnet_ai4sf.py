@@ -66,7 +66,7 @@ def main():
         sys.exit(f"File not found: {csv_path}")
 
     df = pd.read_csv(csv_path, na_values=["", " "])
-    for col in ["epoch", "train_loss", "val_loss"] + \
+    for col in ["epoch", "train_loss", "val_loss", "val_mask_iou"] + \
                ["w_" + k for k in LOSS_NAMES] + \
                ["val_w_" + k for k in LOSS_NAMES]:
         if col in df.columns:
@@ -74,12 +74,12 @@ def main():
 
     val_df = df.dropna(subset=["val_loss"])
 
-    # -------- layout: 3 subplots --------
+    # -------- layout: 4 subplots --------
     #   [0] Total loss (train vs val)
     #   [1] Individual train losses
     #   [2] Individual val losses (at validation epochs only)
-    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
-    fig.suptitle(f"PLR-Net — {os.path.basename(run_dir)}", fontsize=11)
+    #   [3] Val mask IoU
+    fig, axes = plt.subplots(1, 4, figsize=(24, 5))
 
     # --- subplot 0 : total loss train vs val ---
     ax = axes[0]
@@ -127,6 +127,24 @@ def main():
     ax.set_ylabel("Weighted loss")
     ax.set_title("Val Losses (weighted, per component)")
     ax.legend(fontsize=7)
+    ax.grid(True, alpha=0.3)
+
+    # --- subplot 3 : val mask IoU ---
+    ax = axes[3]
+    if "val_mask_iou" in df.columns:
+        iou_df = df.dropna(subset=["val_mask_iou"])
+        if len(iou_df):
+            ax.plot(iou_df["epoch"], iou_df["val_mask_iou"],
+                    color="#2ca02c", linewidth=1.4,
+                    marker="o", markersize=4, label="Val mask IoU")
+            ax.set_ylim(0, 1)
+        else:
+            ax.text(0.5, 0.5, "No IoU data yet",
+                    ha='center', va='center', transform=ax.transAxes, color='grey')
+    ax.set_xlabel("Epoch")
+    ax.set_ylabel("IoU")
+    ax.set_title("Val Mask IoU")
+    ax.legend(fontsize=8)
     ax.grid(True, alpha=0.3)
 
     plt.tight_layout()

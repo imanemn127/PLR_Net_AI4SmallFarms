@@ -24,6 +24,7 @@ from PLRNet.solver import make_lr_scheduler, make_optimizer
 from PLRNet.utils.logger import setup_logger
 from PLRNet.utils.miscellaneous import save_config
 from PLRNet.utils.metric_logger import MetricLogger
+from PLRNet.utils.metrics.cIoU import calc_IoU
 
 import torch
 torch.multiprocessing.set_sharing_strategy('file_system')
@@ -77,6 +78,7 @@ def init_metrics_csv(csv_path, loss_names):
         + ['w_' + k for k in loss_names]
         + ['val_loss']
         + ['val_w_' + k for k in loss_names]
+        + ['val_mask_iou']   # added
     )
     with open(csv_path, 'w', newline='') as f:
         csv.DictWriter(f, fieldnames=fieldnames).writeheader()
@@ -114,144 +116,170 @@ def draw_polygons(ax, polys, color, label):
 
 
 # ------------------------------------------------------------------ #
+#  visualization 
+# ------------------------------------------------------------------ #
+def _render_viz(img_disp, gt_polys, pred_polys, epoch, img_name, viz_dir):
+    """Save one GT | Pred side-by-side figure."""
+    fig, axes = plt.subplots(1, 2, figsize=(8, 4), dpi=150)
+    fig.patch.set_facecolor('black')
+    for ax in axes:
+        ax.imshow(img_disp)
+        ax.axis('off')
+    patches = [
+        draw_polygons(axes[0], gt_polys,   '#00ff00', 'GT'),
+        draw_polygons(axes[1], pred_polys, '#ff6600', 'Pred'),
+    ]
+    axes[0].set_title(f"GT   epoch {epoch:03d}", color='white', fontsize=8)
+    axes[1].set_title(f"Pred epoch {epoch:03d}", color='white', fontsize=8)
+    axes[1].legend(handles=patches, loc='upper right', fontsize=6, framealpha=0.5)
+    plt.tight_layout(pad=0.3)
+    plt.savefig(os.path.join(viz_dir, f"{epoch:03d}_{img_name}.png"),
+                bbox_inches='tight', facecolor=fig.get_facecolor())
+    plt.close(fig)
+
+
+def select_viz_indices_val(val_loader):
+    """
+    Scan val_loader once (no shuffle) and return the indices of:
+      - the image with the most GT polygons (dense)
+      - the image with the fewest GT polygons >= 1 (sparse)
+    Returns list of (flat_index, images_batch, b_in_batch, annotation).
+    Called once before training starts.
+    """
+    coco_obj = val_loader.dataset.coco
+    best = {'dense': (None, -1), 'sparse': (None, float('inf'))}
+    flat_idx = 0
+    entries = {}
+
+    for images, annotations in val_loader:
+        for b in range(images.shape[0]):
+            ann    = annotations[b]
+            img_id = ann.get('img_id', None)
+            count  = (sum(len(a['segmentation'])
+                          for a in coco_obj.loadAnns(coco_obj.getAnnIds(imgIds=[img_id])))
+                      if img_id is not None else 0)
+            entries[flat_idx] = (images, b, ann, count)
+            if count > best['dense'][1]:
+                best['dense'] = (flat_idx, count)
+            if 0 < count < best['sparse'][1]:
+                best['sparse'] = (flat_idx, count)
+            flat_idx += 1
+
+    selected = []
+    for key in ('dense', 'sparse'):
+        idx = best[key][0]
+        if idx is not None:
+            selected.append(entries[idx][:3])  # (images, b, ann)
+    return selected
+
+
+def select_viz_indices_train(train_dataset_obj, transform):
+    """
+    Scan the raw train dataset once with shuffle=False and return:
+      - index of the sample with the most GT mask contours (dense)
+      - index of the sample with the fewest GT mask contours >= 1 (sparse)
+    Returns list of (images_tensor, b=0, annotation) loaded at those indices.
+    Called once before training starts.
+    """
+    from torch.utils.data import DataLoader as _DL
+    from PLRNet.dataset.train_dataset import collate_fn as _train_collate
+    probe_loader = _DL(train_dataset_obj, batch_size=1,
+                       shuffle=False, collate_fn=_train_collate,
+                       num_workers=0)
+    best = {'dense': (None, -1), 'sparse': (None, float('inf'))}
+    entries = {}
+
+    coco_obj = train_dataset_obj.coco
+    img_ids  = train_dataset_obj.images  # ordered list of COCO image IDs
+    for idx, (images, annotations) in enumerate(probe_loader):
+        ann    = annotations[0]
+        img_id = img_ids[idx]
+        ann['filename'] = coco_obj.loadImgs(ids=[img_id])[0]['file_name']
+        mask = ann.get('mask', None)
+        count = 0
+        if mask is not None:
+            m = mask.cpu().numpy() if torch.is_tensor(mask) else np.array(mask)
+            contours, _ = cv2.findContours(
+                (m * 255).astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            count = len([c for c in contours if len(c) >= 3])
+        entries[idx] = (images, 0, ann, count)
+        if count > best['dense'][1]:
+            best['dense'] = (idx, count)
+        if 0 < count < best['sparse'][1]:
+            best['sparse'] = (idx, count)
+
+    selected = []
+    for key in ('dense', 'sparse'):
+        idx = best[key][0]
+        if idx is not None:
+            selected.append(entries[idx][:3])  # (images, b, ann)
+    return selected
+
+
+# ------------------------------------------------------------------ #
 #  Validation visualization  (GT from COCO object)
 # ------------------------------------------------------------------ #
 @torch.no_grad()
-def visualize_val(model, val_loader, epoch, output_dir, mean, std,
-                  n_images=N_VIZ):
-    """Side-by-side GT | Pred for N_VIZ val images."""
+def visualize_val(model, val_viz_entries, coco_obj, epoch, output_dir, mean, std):
+    """
+    Save the 2 pre-selected val images (dense + sparse GT).
+    val_viz_entries is computed once before training by select_viz_indices_val().
+    Output: visualizations/val/{epoch:03d}_{full_patch_name}.png
+    """
     model.eval()
-    device  = next(model.parameters()).device
-    viz_dir = os.path.join(output_dir, 'visualizations', 'val')
+    device   = next(model.parameters()).device
+    viz_dir  = os.path.join(output_dir, 'visualizations', 'val')
     os.makedirs(viz_dir, exist_ok=True)
 
-    coco_obj = val_loader.dataset.coco
-    saved = 0
+    for images, b, ann in val_viz_entries:
+        img_id   = ann.get('img_id', None)
+        img_name = os.path.splitext(os.path.basename(ann.get('filename', 'val')))[0]
+        img_disp = tensor_to_display(images[b], mean, std)
+        output, _ = model(images.to(device))
 
-    for images, annotations in val_loader:
-        if saved >= n_images:
-            break
-        images_dev = images.to(device)
-        output, _  = model(images_dev)
-
-        for b in range(images.shape[0]):
-            if saved >= n_images:
-                break
-
-            ann      = annotations[b]
-            img_name = os.path.splitext(
-                os.path.basename(ann.get('filename', str(saved))))[0]
-            img_id   = ann.get('img_id', None)
-            img_disp = tensor_to_display(images[b], mean, std)
-
-            fig, axes = plt.subplots(1, 2, figsize=(8, 4), dpi=150)
-            fig.patch.set_facecolor('black')
-            for ax in axes:
-                ax.imshow(img_disp)
-                ax.axis('off')
-
-            patches = []
-
-            # left — GT polygons from COCO
-            if img_id is not None:
-                ann_ids = coco_obj.getAnnIds(imgIds=[img_id])
-                anns    = coco_obj.loadAnns(ids=ann_ids)
-                gt_polys = []
-                for a in anns:
-                    for seg in a['segmentation']:
-                        gt_polys.append(np.array(seg).reshape(-1, 2))
-                p = draw_polygons(axes[0], gt_polys, '#00ff00', 'GT')
-                patches.append(p)
-            axes[0].set_title(f"GT  epoch {epoch:03d}", color='white', fontsize=8)
-
-            # right — predicted polygons
-            pred_polys = output['polys_pred'][b] if output['polys_pred'] else []
-            p2 = draw_polygons(axes[1], pred_polys, '#ff6600', 'Pred')
-            patches.append(p2)
-            axes[1].set_title(f"Pred  epoch {epoch:03d}", color='white', fontsize=8)
-
-            if patches:
-                axes[1].legend(handles=patches, loc='upper right',
-                               fontsize=6, framealpha=0.5)
-
-            plt.tight_layout(pad=0.3)
-            out_path = os.path.join(viz_dir, f"{epoch:03d}_{img_name}.png")
-            plt.savefig(out_path, bbox_inches='tight',
-                        facecolor=fig.get_facecolor())
-            plt.close(fig)
-            saved += 1
+        gt_polys = []
+        if img_id is not None:
+            gt_polys = [np.array(seg).reshape(-1, 2)
+                        for a in coco_obj.loadAnns(coco_obj.getAnnIds(imgIds=[img_id]))
+                        for seg in a['segmentation']]
+        pred_polys = output['polys_pred'][b] if output['polys_pred'] else []
+        _render_viz(img_disp, gt_polys, pred_polys, epoch, img_name, viz_dir)
 
 
 # ------------------------------------------------------------------ #
 #  Train visualization  (GT from mask via cv2.findContours)
 # ------------------------------------------------------------------ #
 @torch.no_grad()
-def visualize_train(model, fixed_train_batches, epoch, output_dir, mean, std):
+def visualize_train(model, train_viz_entries, epoch, output_dir, mean, std):
     """
-    Side-by-side GT | Pred for a fixed set of training samples.
-    GT is derived from ann['mask'] using cv2.findContours (no COCO object needed).
-    The same samples are used every epoch so evolution is trackable.
-    Output: {output_dir}/visualizations/train/{epoch:03d}_{img_name}.png
+    Save the 2 pre-selected train images (dense + sparse GT).
+    train_viz_entries is computed once before training by select_viz_indices_train().
+    Output: visualizations/train/{epoch:03d}_{full_patch_name}.png
     """
     model.eval()
     device  = next(model.parameters()).device
     viz_dir = os.path.join(output_dir, 'visualizations', 'train')
     os.makedirs(viz_dir, exist_ok=True)
 
-    for images, annotations in fixed_train_batches:
-        images_dev = images.to(device)
-        output, _  = model(images_dev)
+    for images, b, ann in train_viz_entries:
+        img_name = os.path.splitext(
+            os.path.basename(ann.get('filename', 'train')))[0]
+        img_disp = tensor_to_display(images[b], mean, std)
+        output, _ = model(images.to(device))
 
-        for b in range(images.shape[0]):
-            ann      = annotations[b]
-            img_name = os.path.splitext(
-                os.path.basename(ann.get('filename', f"sample_{b}")))[0]
-            img_disp = tensor_to_display(images[b], mean, std)
-
-            fig, axes = plt.subplots(1, 2, figsize=(8, 4), dpi=150)
-            fig.patch.set_facecolor('black')
-            for ax in axes:
-                ax.imshow(img_disp)
-                ax.axis('off')
-
-            patches = []
-
-            # left — GT from binary mask via contours
-            mask = ann.get('mask', None)
-            if mask is not None:
-                if torch.is_tensor(mask):
-                    mask_np = mask.cpu().numpy()
-                else:
-                    mask_np = np.array(mask)
-                mask_u8 = (mask_np * 255).astype(np.uint8)
-                contours, _ = cv2.findContours(
-                    mask_u8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                gt_polys = [c.reshape(-1, 2) for c in contours if len(c) >= 3]
-                p = draw_polygons(axes[0], gt_polys, '#00ff00', 'GT')
-                patches.append(p)
-            axes[0].set_title(f"GT  epoch {epoch:03d}", color='white', fontsize=8)
-
-            # right — predicted polygons
-            pred_polys = output['polys_pred'][b] if output['polys_pred'] else []
-            p2 = draw_polygons(axes[1], pred_polys, '#ff6600', 'Pred')
-            patches.append(p2)
-            axes[1].set_title(f"Pred  epoch {epoch:03d}", color='white', fontsize=8)
-
-            if patches:
-                axes[1].legend(handles=patches, loc='upper right',
-                               fontsize=6, framealpha=0.5)
-
-            plt.tight_layout(pad=0.3)
-            out_path = os.path.join(viz_dir, f"{epoch:03d}_{img_name}.png")
-            plt.savefig(out_path, bbox_inches='tight',
-                        facecolor=fig.get_facecolor())
-            plt.close(fig)
+        mask = ann.get('mask', None)
+        gt_polys = []
+        if mask is not None:
+            m = mask.cpu().numpy() if torch.is_tensor(mask) else np.array(mask)
+            contours, _ = cv2.findContours(
+                (m * 255).astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            gt_polys = [c.reshape(-1, 2) for c in contours if len(c) >= 3]
+        pred_polys = output['polys_pred'][b] if output['polys_pred'] else []
+        _render_viz(img_disp, gt_polys, pred_polys, epoch, img_name, viz_dir)
 
     model.train()
 
 
-# ------------------------------------------------------------------ #
-#  Validation loss pass
 # ------------------------------------------------------------------ #
 #  Validation loss pass
 # ------------------------------------------------------------------ #
@@ -260,19 +288,37 @@ def validate(model, val_loader, loss_reducer, device, loss_names):
     model.eval()
     sums  = {k: 0.0 for k in loss_names}
     total = 0.0
+    iou_sum = 0.0  # accumulate IoU over all images
     n     = 0
+    
     for images, annotations in val_loader:
         images      = images.to(device)
         annotations = to_single_device(annotations, device)
-        loss_dict, _ = model.forward_train(images, annotations)
+
+        # forward pass (extras contains refined mask logits)
+        loss_dict, extras = model.forward_train(images, annotations)
+
         weighted = loss_reducer(loss_dict)
         for k in loss_names:
             sums[k] += loss_dict[k].item()
         total += weighted.item()
-        n     += 1
+
+        # per‑image IoU inside the batch
+        remask  = extras['remask_pred'].sigmoid()
+        mask_gt = torch.stack([a['mask'].squeeze() for a in annotations]).to(device)
+
+        for b in range(remask.size(0)):
+            pred_bin = (remask[b] > 0.5).cpu().numpy()
+            gt_bin   = (mask_gt[b] > 0.5).cpu().numpy()
+            iou_sum += calc_IoU(pred_bin, gt_bin)
+
+        n += remask.size(0)    # count images, not batches
+
+    # compute averages after all batches
     avg       = {k: sums[k] / max(n, 1) for k in loss_names}
     avg_total = total / max(n, 1)
-    return avg_total, avg
+    avg_iou   = iou_sum / max(n, 1)    # mean IoU over all images
+    return avg_total, avg, avg_iou
 
 
 # ------------------------------------------------------------------ #
@@ -315,16 +361,16 @@ def train(cfg, output_dir, val_every):
         logger.info(f"Checkpoint saved → checkpoints/{name}")
 
     csv_path   = os.path.join(output_dir, 'metrics.csv')
-    fieldnames = init_metrics_csv(csv_path, loss_names)  # loss_names still needed for w_ columns
+    fieldnames = init_metrics_csv(csv_path, loss_names)
 
-    # Pre-fetch N_VIZ fixed training batches (same every epoch)
-    fixed_train_batches = []
-    _train_iter = iter(train_dataset)
-    for _ in range(N_VIZ):
-        try:
-            fixed_train_batches.append(next(_train_iter))
-        except StopIteration:
-            break
+    # Pre-select visualization samples once before training starts
+    # val: scan val_loader (no shuffle) → dense + sparse by COCO polygon count
+    # train: scan raw dataset with shuffle=False → dense + sparse by mask contour count
+    val_coco_obj      = val_dataset.dataset.coco
+    val_viz_entries   = select_viz_indices_val(val_dataset)
+    train_viz_entries = select_viz_indices_train(train_dataset.dataset, None)
+    logger.info(f"Viz samples selected — val: {len(val_viz_entries)}, "
+                f"train: {len(train_viz_entries)}")
 
     start_time = time.time()
     end        = time.time()
@@ -389,10 +435,11 @@ def train(cfg, output_dir, val_every):
         # --- validation + visualizations every val_every epochs ---
         val_total  = float('nan')
         val_losses = {k: float('nan') for k in loss_names}
+        val_iou    = float('nan')
 
         if epoch % val_every == 0:
             logger.info(f"=== Validation at epoch {epoch} ===")
-            val_total, val_losses = validate(
+            val_total, val_losses, val_iou = validate(
                 model, val_dataset, loss_reducer, device, loss_names)
             logger.info(
                 "Val total_loss: {:.4f}  |  {}".format(
@@ -400,6 +447,7 @@ def train(cfg, output_dir, val_every):
                     "  ".join(f"{k}: {v:.4f}" for k, v in val_losses.items())
                 )
             )
+            logger.info(f"Val mask_iou: {val_iou:.4f}")
             # checkpoint at this val epoch
             save_checkpoint(f'epoch_{epoch}.pth', epoch)
 
@@ -409,12 +457,9 @@ def train(cfg, output_dir, val_every):
                 save_checkpoint('best_val_loss.pth', epoch)
                 logger.info(f"New best val loss: {best_val_loss:.4f}")
 
-            # val visualization
-            visualize_val(model, val_dataset, epoch, output_dir,
-                          mean, std, n_images=N_VIZ)
-            # train visualization (fixed samples, same every epoch)
-            visualize_train(model, fixed_train_batches, epoch,
-                            output_dir, mean, std)
+            # visualizations — same 2 images every epoch (dense + sparse GT)
+            visualize_val(model, val_viz_entries, val_coco_obj, epoch, output_dir, mean, std)
+            visualize_train(model, train_viz_entries, epoch, output_dir, mean, std)
 
         # --- write metrics.csv ---
         row = {'epoch': epoch, 'train_loss': round(avg_total, 6)}
@@ -424,6 +469,7 @@ def train(cfg, output_dir, val_every):
         for k in loss_names:
             row['val_w_' + k] = (round(val_losses[k] * loss_weights[k], 6)
                                  if not np.isnan(val_losses[k]) else '')
+        row['val_mask_iou'] = round(val_iou, 6) if epoch % val_every == 0 else ''
         append_metrics_csv(csv_path, fieldnames, row)
 
         logger.info(
