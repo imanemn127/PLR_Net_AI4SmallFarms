@@ -24,16 +24,16 @@ class DatasetCatalog(object):
             'ann_file': 'data/val/annotation.json'
         },
         'ai4sf_train': {
-            'img_dir': 'ai4sf_256px_area100',
-            'ann_file': 'ai4sf_256px_area100/train_coco.json'
+            'img_dir': 'ai4sf_256px_area50',
+            'ann_file': 'ai4sf_256px_area50/train_coco.json'
         },
         'ai4sf_val': {
-            'img_dir': 'ai4sf_256px_area100',
-            'ann_file': 'ai4sf_256px_area100/val_coco.json'
+            'img_dir': 'ai4sf_256px_area50',
+            'ann_file': 'ai4sf_256px_area50/val_coco.json'
         },
         'ai4sf_test': {
-            'img_dir': 'ai4sf_256px_area100',
-            'ann_file': 'ai4sf_256px_area100/test_coco.json'
+            'img_dir': 'ai4sf_256px_area50',
+            'ann_file': 'ai4sf_256px_area50/test_coco.json'
         },
     }
 
