@@ -262,7 +262,7 @@ watch -n 1 nvidia-smi
 branches learn almost nothing. No coherent polygons in validation visualisations.
 Root cause: only 98 training patches, no dropout, no D4 augmentation.
 
-### Run 2 — regularisation fixes (stopped at epoch 88/150)
+### Run 2 — regularisation fixes (stopped at epoch 79/150)
 
 Three changes applied after run 1:
 
@@ -272,21 +272,53 @@ Three changes applied after run 1:
 | `Dropout2d(p=0.1)` in heads | `PLRNet/detector.py` — `_make_conv` | Forces each channel to learn independently; applied to mask, jloc, afm heads |
 | Top-K junctions 600 → 300 | `PLRNet/utils/polygon.py` | Reduces false-positive junction candidates; article value for the original dataset |
 
-| Loss (weighted) | Train (ep 1 → 88) | Val (ep 5 → 85) |
+| Loss (weighted) | Train (ep 1 → 79) | Val (ep 5 → 75) |
 |------|-------------------|-----------------|
-| total | 6.09 → 1.91 | 2.18 → 2.12 |
-| `w_loss_mask` | 0.54 → 0.31 | 0.48 → 0.46 |
-| `w_loss_jloc` | 4.27 → 0.41 | 0.46 → 0.43 |
-| `w_loss_joff` | 0.127 → 0.122 | 0.123 → 0.119 |
-| `w_loss_afm` | 0.43 → 0.38 | 0.42 → 0.40 |
+| total | 6.09 → 1.93 | 2.18 → 2.15 |
+| `w_loss_jloc` | 4.27 → 0.42 | 0.46 → 0.43 |
+| `w_loss_mask` | 0.54 → 0.32 | 0.48 → 0.49 |
+| `w_loss_afm` | 0.43 → 0.39 | 0.42 → 0.40 |
 | `w_loss_remask` | 0.72 → 0.68 | 0.69 → 0.71 |
+| `w_loss_joff` | 0.127 → 0.122 | 0.123 → 0.119 |
 
-**Diagnosis:** The train/val gap is under control — D4 + Dropout successfully reduced overfitting
-on the mask branch. Visually, large rectangular shapes begin to appear on dense
-patches by epoch 50 and loosely follow field edges at epoch 85, but boundary
-precision remains poor and the model still produces many spurious polygons on sparse
-patches. The junction offset branch (`loss_joff`) is barely learning (0.127 → 0.122),
-which limits vertex placement accuracy and is the main bottleneck for polygon quality.
+**Diagnosis:** The train/val gap is well controlled (1.93 vs 2.15 at epoch 75, gap ~0.20) —
+D4 + Dropout successfully prevented the mask overfitting seen in run 1. The `w_loss_mask`
+on val stays nearly flat (0.48 → 0.49) while train improves (0.54 → 0.32), which
+indicates the mask branch is no longer memorising. Visually, large rectangular shapes
+begin to appear on dense patches by epoch 50 and loosely follow field edges at epoch 75,
+but boundary precision remains poor and the model still produces many spurious polygons
+on sparse patches. The `loss_joff` branch barely moves (0.127 → 0.122) — junction
+offset regression is not learning, which limits vertex placement accuracy.
+
+### Run 3 — MIN_AREA 100→50 + val mask IoU tracking (150 epochs, complete)
+
+Two changes compared to run 2:
+
+| Change | Where | Why |
+|--------|-------|-----|
+| `MIN_AREA` 100 → 50 px² | `scripts/build_coco_dataset.py` | Recovers small fields; annotation count 8 205 → 27 331 on train (×3.3) |
+| Val mask IoU added to metrics | `scripts/train.py`, `detector.py` | Measures segmentation quality independently of loss magnitude |
+
+Dataset rebuilt: `data/ai4sf_256px_area50/` (98 train / 24 val / 18 test patches).
+
+| Loss (weighted) | Train (ep 1 → 150) | Val (ep 5 → 150) |
+|------|-------------------|-----------------|
+| total | 6.47 → 2.28 | 3.13 → 3.09 |
+| `w_loss_jloc` | 4.43 → 0.89 | 1.11 → 1.08 |
+| `w_loss_mask` | 0.65 → 0.25 | 0.63 → 0.70 |
+| `w_loss_afm` | 0.56 → 0.42 | 0.57 → 0.51 |
+| `w_loss_remask` | 0.70 → 0.60 | 0.70 → 0.68 |
+| `w_loss_joff` | 0.127 → 0.122 | 0.126 → 0.122 |
+| **`val_mask_iou`** | — | **0.430 (ep 5) → 0.417 (ep 150), best 0.457 (ep 25)** |
+
+**Diagnosis:** Annotation count tripled (8 205 → 27 331 train) which raised the absolute loss
+level but generalisation remains stable — train/val gap ~0.81 at epoch 150.
+`val_mask_iou` peaks at 0.457 (epoch 25) then declines to 0.417; mask loss keeps
+decreasing while IoU does not follow, indicating the model overfits annotation density
+rather than learning sharper boundaries. `val_w_loss_jloc` spikes at late epochs (1.13
+at epoch 145), likely due to the higher density of small polygons. `loss_joff` flat
+across all three runs (0.127 → 0.122) — junction offset regression has not learned and
+remains the main bottleneck for polygon accuracy.
 
 ---
 
