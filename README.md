@@ -43,14 +43,22 @@ That gap creates several concrete problems:
 
 ## Dataset
 
-Sentinel-2 Level-2A, bands B4/B3/B2 (Red, Green, Blue), patches **256 × 256 px**,
-minimum polygon area **100 px²**.
+Sentinel-2 Level-2A, bands B4/B3/B2 (Red, Green, Blue), patches **256 × 256 px**.
+
+Two versions were built at different `MIN_AREA` thresholds:
+
+| Version | Min area | Train ann | Val ann | Test ann |
+|---------|----------|-----------|---------|----------|
+| `ai4sf_256px_area100` | 100 px² | 8 205 | ~2 000 | ~1 500 |
+| `ai4sf_256px_area50` | 50 px² | 27 331 | ~7 000 | ~5 000 |
+
+Current active dataset: **`ai4sf_256px_area50`** (set in `PLRNet/config/paths_catalog.py`).
 
 ```
-data/ai4sf_256px_area100/
-  train_coco.json      98 patches    77 818 annotations
-  val_coco.json        24 patches    20 168 annotations
-  test_coco.json       18 patches    15 313 annotations
+data/ai4sf_256px_area50/
+  train_coco.json      98 patches    27 331 annotations
+  val_coco.json        24 patches
+  test_coco.json       18 patches
   train/patches_256/
   validate/patches_256/
   test/patches_256/
@@ -158,8 +166,9 @@ python scripts/build_coco_dataset.py
 ```
 
 Splits each tile into non-overlapping 256×256 px patches, clips field polygons to each
-patch boundary, converts UTM to pixel coordinates, filters annotations below 100 px²,
-and writes `train_coco.json`, `val_coco.json`, `test_coco.json` plus the patch images.
+patch boundary, converts UTM to pixel coordinates, filters annotations below `MIN_AREA_PX`
+(set at the top of the script — currently 50 px²), and writes `train_coco.json`,
+`val_coco.json`, `test_coco.json` plus the patch images.
 
 ### Compute normalisation stats
 
@@ -213,6 +222,7 @@ OUTPUT_DIR/YYYY-MM-DD_HH-MM-SS/
 | `w_loss_*` | weighted component loss (train) |
 | `val_loss` | weighted total val loss (every `val_every` epochs) |
 | `val_w_loss_*` | weighted component loss (val) |
+| `val_mask_iou` | mean IoU of `remask_pred` vs GT mask (threshold 0.5, val patches only) |
 
 ### Loss weights (default)
 
@@ -231,8 +241,8 @@ python scripts/plot_losses_plrnet_ai4sf.py                  # latest run
 python scripts/plot_losses_plrnet_ai4sf.py /path/to/run     # specific run
 ```
 
-Produces `loss_curves_plrnet.png` with 3 panels: total loss (train vs val),
-weighted component losses (train), weighted component losses (val).
+Produces `loss_curves_plrnet.png` with 4 panels: total loss (train vs val),
+weighted component losses (train), weighted component losses (val), val mask IoU.
 
 ---
 
@@ -320,7 +330,14 @@ at epoch 145), likely due to the higher density of small polygons. `loss_joff` f
 across all three runs (0.127 → 0.122) — junction offset regression has not learned and
 remains the main bottleneck for polygon accuracy.
 
+Note: `paths_catalog.py` pointed to `ai4sf_256px_area50` for this run. Confirmed retroactively at run 7.
+
 ### Run 4 — `loss_joff` weight 0.25 → 1.0 (125 epochs)
+
+Note: a Git stash + rebase after run 3 restored `paths_catalog.py` to its default value,
+pointing to area100 (8 205 train ann) instead of area50 (27 331). Runs 4, 5, and 6 all
+trained on area100 as a result — metrics are not directly comparable to run 3. Detected
+retroactively at run 7.
 
 Before relaunching I wanted to understand why `loss_joff` has been flat since the start (0.127 → 0.122 across 3 runs). I wrote `scripts/diag_joff.py` to inspect the targets directly in the data pipeline — do the offsets actually exist in the GT, or is it a data problem?
 
@@ -368,6 +385,8 @@ the two heads on the junction feature map without sacrificing mask quality.
 
 ### Run 5 — `loss_jloc` weight 8.0 → 4.0, `loss_joff` 1.0 (150 epochs, complete)
 
+Note: same dataset issue as run 4 — area100 at launch, not area50 as intended (see run 4 note).
+
 | Change | Where | Why |
 |--------|-------|-----|
 | `loss_jloc` weight 8.0 → 4.0 | `config-files/PLR-Net.yaml` | `loss_jloc` and `loss_joff` share the same junction feature map; reducing jloc weight frees gradient budget for the offset head |
@@ -396,6 +415,55 @@ is set. Runs 4 and 5 both degraded `val_mask_iou` relative to run 3 (best 0.457)
 
 **Next — Run 6:** disable `loss_joff` (weight 0.0), restore `loss_jloc: 8.0`. Goal:
 recover the mask IoU of run 3 (best 0.457) without the joff head competing for gradients.
+
+### Run 6 — `loss_joff: 0.0`, `loss_jloc: 8.0`, dataset area100 (125 epochs)
+
+| Change | Where | Why |
+|--------|-------|-----|
+| `loss_joff` weight 1.0 → 0.0 | `config-files/PLR-Net.yaml` | Runs 4–5 showed joff head degrades mask IoU; disabling removes the competition |
+| `loss_jloc` weight 4.0 → 8.0 | `config-files/PLR-Net.yaml` | Restore original balance after run 5 experiment |
+
+Note: `paths_catalog.py` still pointed to area100 at launch (same issue as runs 4–5).
+
+| Loss (weighted) | Train (ep 1 → 125) | Val (ep 5 → 125) |
+|------|-------------------|-----------------|
+| total | 5.97 → 1.63 | 2.04 → 2.00 |
+| `w_loss_joff` | 0.0 (disabled) | 0.0 (disabled) |
+| `w_loss_jloc` | 4.27 → 0.391 | 0.456 → 0.435 |
+| `w_loss_mask` | 0.543 → 0.238 | 0.473 → 0.462 |
+| `w_loss_afm` | 0.433 → 0.341 | 0.419 → 0.406 |
+| `w_loss_remask` | 0.722 → 0.662 | 0.693 → 0.694 |
+| **`val_mask_iou`** | — | **0.112 (ep 5) → 0.150 (ep 125), best 0.220 (ep 85)** |
+
+**Diagnosis:** best IoU is 0.220 — well below run 3 (0.457). At this point the dataset
+issue was not yet identified; the low IoU was attributed to the loss configuration. Val
+Cambodia ep 125: dense false positives covering the whole scene, no GT match. Val Vietnam
+ep 125: large coarse polygons, missing fine field edges.
+
+**Next — Run 7:** fix `paths_catalog.py` to area50, keep `loss_joff: 0.0`, `loss_jloc: 8.0`.
+
+### Run 7 — `loss_joff: 0.0`, `loss_jloc: 8.0`, dataset area50 (150 epochs, complete)
+
+| Change | Where | Why |
+|--------|-------|-----|
+| Dataset area100 → area50 | `PLRNet/config/paths_catalog.py` | Identified that runs 4–6 had used area100; reverted to area50 to isolate the dataset effect |
+
+| Loss (weighted) | Train (ep 1 → 150) | Val (ep 5 → 150) |
+|------|-------------------|-----------------|
+| total | 6.35 → 2.26 | 2.99 → 2.92 |
+| `w_loss_joff` | 0.0 (disabled) | 0.0 (disabled) |
+| `w_loss_jloc` | 4.44 → 0.912 | 1.105 → 1.067 |
+| `w_loss_mask` | 0.646 → 0.300 | 0.621 → 0.650 |
+| `w_loss_afm` | 0.560 → 0.434 | 0.569 → 0.512 |
+| `w_loss_remask` | 0.700 → 0.610 | 0.690 → 0.687 |
+| **`val_mask_iou`** | — | **0.426 (ep 5) → 0.441 (ep 150), best 0.450 (ep 15)** |
+
+**Diagnosis:** IoU reaches 0.426 at ep 5 and peaks at 0.450 (ep 15), confirming area50
+is the key variable. After ep 15 it oscillates 0.39–0.45 with no upward trend.
+`val_w_loss_mask` rises (0.621 → 0.650) while train mask loss falls (0.646 → 0.300) —
+mask branch overfitting. The model fails on low-contrast uniform-texture patches (Cambodia
+small paddy grids): near-zero detections despite clear GT. IoU ceiling at ~0.45 is not a
+loss-weight issue.
 
 ---
 

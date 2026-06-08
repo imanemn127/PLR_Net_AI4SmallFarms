@@ -34,8 +34,8 @@ MODEL:
   HEAD_SIZE: [[2]]
   OUT_FEATURE_CHANNELS: 64
   LOSS_WEIGHTS:
-    loss_joff: 1.0    # joff  regression, increased from 0.25 to let offsets learn
-    loss_jloc: 4.0    # jloc  classification, reduced from 8.0 to balance with joff
+    loss_joff: 0.0    # temporarily disabled – offset regression competes with junction classification and degrades mask IoU
+    loss_jloc: 8.0    # restored to default
     loss_mask: 1.0
     loss_afm : 0.1
     loss_remask : 1.0
