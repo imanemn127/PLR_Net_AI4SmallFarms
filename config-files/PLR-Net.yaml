@@ -34,8 +34,8 @@ MODEL:
   HEAD_SIZE: [[2]]
   OUT_FEATURE_CHANNELS: 64
   LOSS_WEIGHTS:
-    loss_joff: 0.25    # joff  regression
-    loss_jloc: 8.0     # jloc  classification
+    loss_joff: 1.0    # joff  regression, increased from 0.25 – offsets exist but need more gradient signal
+    loss_jloc: 8.0    # jloc  classification
     loss_mask: 1.0
     loss_afm : 0.1
     loss_remask : 1.0
