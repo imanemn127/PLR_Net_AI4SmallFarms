@@ -358,12 +358,44 @@ move with enough weight. But `val_mask_iou` is very volatile (0.066 at ep 10, 0.
 ep 115) and overall much lower than run 3 best (0.457) — the mask branch is losing
 gradient to the joff head. `loss_jloc` (weight 8.0) and `loss_joff` (weight 1.0) share
 the same junction feature map; raising joff without rebalancing jloc shifts the
-representation away from corner classification. Visually at ep 125, Vietnam val shows a
-few large polygons loosely oriented along field boundaries — better spatial structure
-than run 3 — but many false positives remain and Cambodia val is still chaotic.
+representation away from corner classification. Visually, Vietnam val produces large
+polygons that do not match the small GT parcels — the model merges many fields into
+coarse shapes. Cambodia val generates dense false positives scattered across the entire
+urban area with no correspondence to the GT annotations.
 
 **Next — Run 5:** keep `loss_joff: 1.0`, reduce `loss_jloc: 8.0 → 4.0` to rebalance
 the two heads on the junction feature map without sacrificing mask quality.
+
+### Run 5 — `loss_jloc` weight 8.0 → 4.0, `loss_joff` 1.0 (150 epochs, complete)
+
+| Change | Where | Why |
+|--------|-------|-----|
+| `loss_jloc` weight 8.0 → 4.0 | `config-files/PLR-Net.yaml` | `loss_jloc` and `loss_joff` share the same junction feature map; reducing jloc weight frees gradient budget for the offset head |
+
+| Loss (weighted) | Train (ep 1 → 150) | Val (ep 5 → 150) |
+|------|-------------------|-----------------|
+| total | 4.34 → 1.78 | 2.31 → 2.32 |
+| `w_loss_joff` | 0.509 → 0.388 | 0.492 → 0.484 |
+| `w_loss_jloc` | 2.14 → 0.197 | 0.231 → 0.222 |
+| `w_loss_mask` | 0.543 → 0.215 | 0.469 → 0.504 |
+| `w_loss_afm` | 0.433 → 0.324 | 0.420 → 0.410 |
+| `w_loss_remask` | 0.720 → 0.659 | 0.694 → 0.700 |
+| **`val_mask_iou`** | — | **0.178 (ep 5) → 0.198 (ep 150), best 0.210 (ep 85)** |
+
+**Diagnosis:** Reducing `loss_jloc` to 4.0 did not accelerate `loss_joff` learning
+(0.509 → 0.388 over 150 epochs, same pace as run 4). `val_mask_iou` best is 0.210
+at epoch 85 — identical to run 4 best — so rebalancing brought no improvement on the
+offset side. After epoch 100 the gap on `w_loss_mask` widens (train 0.215, val
+0.504–0.541), indicating the mask branch starts overfitting again. Visually, Vietnam
+val generates large polygons covering whole zones that do not match the small GT
+parcels — the model is not learning fine boundaries. Cambodia val produces scattered
+false positives across the entire urban area with no correspondence to the few GT
+annotations. The conclusion across runs 3–5: with only 0.44% of pixels active,
+`loss_joff` cannot be improved by reweighting alone regardless of how `loss_jloc`
+is set. Runs 4 and 5 both degraded `val_mask_iou` relative to run 3 (best 0.457).
+
+**Next — Run 6:** disable `loss_joff` (weight 0.0), restore `loss_jloc: 8.0`. Goal:
+recover the mask IoU of run 3 (best 0.457) without the joff head competing for gradients.
 
 ---
 
