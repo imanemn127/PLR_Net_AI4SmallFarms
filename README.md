@@ -320,6 +320,51 @@ at epoch 145), likely due to the higher density of small polygons. `loss_joff` f
 across all three runs (0.127 → 0.122) — junction offset regression has not learned and
 remains the main bottleneck for polygon accuracy.
 
+### Run 4 — `loss_joff` weight 0.25 → 1.0 (125 epochs)
+
+Before relaunching I wanted to understand why `loss_joff` has been flat since the start (0.127 → 0.122 across 3 runs). I wrote `scripts/diag_joff.py` to inspect the targets directly in the data pipeline — do the offsets actually exist in the GT, or is it a data problem?
+
+The script loads a few batches from the train loader, calls the encoder to materialise the GT tensors, and prints stats on `joff_gt` restricted to junction pixels only.
+
+Result over 5 batches:
+
+```
+Total junction pixels : 1452 / 327680 (0.44%)
+joff_x  min=-0.500  max=0.499  mean=0.006  std=0.294
+joff_y  min=-0.500  max=0.499  mean=-0.011  std=0.292
+fraction |offset| > 1e-6 : 1.000
+```
+
+The offsets are there, well distributed, spanning the full ±0.5 range. So it's not a data problem — the branch *could* learn.
+
+The real issue: junction pixels are only **0.44 %** of the total. The joff gradient is microscopic compared to `loss_jloc × 8.0` which covers every pixel. At weight 0.25, the optimiser essentially ignores the joff head.
+
+| Change | Where | Why |
+|--------|-------|-----|
+| `loss_joff` weight 0.25 → 1.0 | `config-files/PLR-Net.yaml` | Junction pixels = 0.44% of image; offset head starved of gradient at weight 0.25 |
+
+| Loss (weighted) | Train (ep 1 → 125) | Val (ep 5 → 125) |
+|------|-------------------|-----------------|
+| total | 6.47 → 1.97 | 2.57 → 2.52 |
+| `w_loss_joff` | 0.509 → 0.382 | 0.492 → 0.491 |
+| `w_loss_jloc` | 4.27 → 0.385 | 0.463 → 0.442 |
+| `w_loss_mask` | 0.544 → 0.213 | 0.490 → 0.489 |
+| `w_loss_afm` | 0.433 → 0.332 | 0.426 → 0.407 |
+| `w_loss_remask` | 0.720 → 0.658 | 0.694 → 0.696 |
+| **`val_mask_iou`** | — | **0.132 (ep 5) → 0.167 (ep 125), best 0.230 (ep 115)** |
+
+**Diagnosis:** `loss_joff` finally learns (0.509 → 0.382 train) confirming the branch can
+move with enough weight. But `val_mask_iou` is very volatile (0.066 at ep 10, 0.230 at
+ep 115) and overall much lower than run 3 best (0.457) — the mask branch is losing
+gradient to the joff head. `loss_jloc` (weight 8.0) and `loss_joff` (weight 1.0) share
+the same junction feature map; raising joff without rebalancing jloc shifts the
+representation away from corner classification. Visually at ep 125, Vietnam val shows a
+few large polygons loosely oriented along field boundaries — better spatial structure
+than run 3 — but many false positives remain and Cambodia val is still chaotic.
+
+**Next — Run 5:** keep `loss_joff: 1.0`, reduce `loss_jloc: 8.0 → 4.0` to rebalance
+the two heads on the junction feature map without sacrificing mask quality.
+
 ---
 
 ## Troubleshooting
