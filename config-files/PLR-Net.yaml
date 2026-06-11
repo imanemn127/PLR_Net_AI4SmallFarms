@@ -2,7 +2,7 @@ SOLVER:
   IMS_PER_BATCH: 1
   BASE_LR: 1e-4
   MAX_EPOCH: 150
-  STEPS: (13,)
+  STEPS: (60, 110)   # Test B: was (13,) — give jloc branch more time at high LR
   WEIGHT_DECAY: 0.0001
   CHECKPOINT_PERIOD: 1
   OPTIMIZER: "ADAM"

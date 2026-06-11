@@ -33,13 +33,13 @@ def get_pred_junctions(convex_map, concave_map, joff_map):
 
     concave_pred_nms = non_maximum_suppression(concave_map)
 
-    topK = min(300, int((concave_pred_nms>0.008).float().sum().item()))  # reduced from 600: fewer false positives on S2 patches
+    topK = min(300, int((concave_pred_nms>0.008).float().sum().item()))
 
     juncs_concave, _ = get_junctions(concave_pred_nms, joff_map, topk=topK)
 
 
     convex_pred_nms = non_maximum_suppression(convex_map)
-    topK = min(300, int((convex_pred_nms > 0.008).float().sum().item()))  # reduced from 600
+    topK = min(300, int((convex_pred_nms > 0.008).float().sum().item()))
     juncs_convex, _ = get_junctions(convex_pred_nms, joff_map, topk=topK)
 
     juncs_pred = torch.cat((juncs_concave, juncs_convex), 0)
@@ -200,12 +200,12 @@ def get_poly_crowdai(prop, mask_pred, junctions):
 
                 cj_dis = cdist(c, junctions)[np.arange(len(cj_match_)), cj_match_] 
 
-                u, ind = np.unique(cj_match_[cj_dis < 5], return_index=True)
+                u, ind = np.unique(cj_match_[cj_dis < 3], return_index=True)  # Test A: tightened from 5 px to 3 px
                 if len(u) > 2:
 
-                    ppoly = junctions[u[np.argsort(ind)]] 
+                    ppoly = junctions[u[np.argsort(ind)]]
                     ppoly = np.concatenate((ppoly, ppoly[0].reshape(-1, 2)))
-                    init_poly = ppoly 
+                    init_poly = ppoly
             init_poly = simple_polygon(init_poly, thres=10)
             #init_poly = simple_polygon1(init_poly)
             poly.extend(init_poly.tolist())
@@ -239,7 +239,7 @@ def get_poly_inria(prop, mask_pred, junctions, pid):
             if len(junctions) > 0:
                 cj_match_ = np.argmin(cdist(contour, junctions), axis=1)
                 cj_dis = cdist(contour, junctions)[np.arange(len(cj_match_)), cj_match_]
-                u, ind = np.unique(cj_match_[cj_dis < 5], return_index=True)
+                u, ind = np.unique(cj_match_[cj_dis < 3], return_index=True)  # Test A: tightened from 5 px to 3 px
                 if len(u) > 2:
                     ppoly = junctions[u[np.argsort(ind)]]
                     #ppoly = np.concatenate((ppoly, ppoly[0].reshape(-1, 2)))

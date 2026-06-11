@@ -74,11 +74,11 @@ def set_random_seed(seed, deterministic=False):
 
 def init_metrics_csv(csv_path, loss_names):
     fieldnames = (
-        ['epoch', 'train_loss']
+        ['epoch', 'train_loss', 'train_mask_iou']
         + ['w_' + k for k in loss_names]
         + ['val_loss']
         + ['val_w_' + k for k in loss_names]
-        + ['val_mask_iou']   # added
+        + ['val_mask_iou']
     )
     with open(csv_path, 'w', newline='') as f:
         csv.DictWriter(f, fieldnames=fieldnames).writeheader()
@@ -379,17 +379,19 @@ def train(cfg, output_dir, val_every):
         meters = MetricLogger(" ")
         model.train()
 
-        epoch_loss_sums = {k: 0.0 for k in loss_names}
-        epoch_total     = 0.0
-        n_batches       = 0
+        epoch_loss_sums  = {k: 0.0 for k in loss_names}
+        epoch_total      = 0.0
+        epoch_iou_sum    = 0.0
+        epoch_n_images   = 0
+        n_batches        = 0
 
         for it, (images, annotations) in enumerate(train_dataset):
             data_time   = time.time() - end
             images      = images.to(device)
             annotations = to_single_device(annotations, device)
 
-            loss_dict, _ = model(images, annotations)
-            total_loss   = loss_reducer(loss_dict)
+            loss_dict, extras = model(images, annotations)
+            total_loss        = loss_reducer(loss_dict)
 
             with torch.no_grad():
                 loss_dict_red = {k: v.item() for k, v in loss_dict.items()}
@@ -399,6 +401,15 @@ def train(cfg, output_dir, val_every):
                     epoch_loss_sums[k] += loss_dict_red.get(k, 0.0)
                 epoch_total += loss_red
                 n_batches   += 1
+
+                # accumulate train mask IoU using the remask logit already computed
+                remask   = extras['remask_pred'].sigmoid()
+                mask_gt  = torch.stack([a['mask'].squeeze() for a in annotations]).to(device)
+                for b in range(remask.size(0)):
+                    pred_bin = (remask[b] > 0.5).cpu().numpy()
+                    gt_bin   = (mask_gt[b] > 0.5).cpu().numpy()
+                    epoch_iou_sum  += calc_IoU(pred_bin, gt_bin)
+                    epoch_n_images += 1
 
             optimizer.zero_grad()
             total_loss.backward()
@@ -425,9 +436,10 @@ def train(cfg, output_dir, val_every):
 
         scheduler.step()
 
-        avg_losses = {k: epoch_loss_sums[k] / max(n_batches, 1) for k in loss_names}
-        avg_total  = epoch_total / max(n_batches, 1)
-        current_lr = optimizer.param_groups[0]["lr"]
+        avg_losses     = {k: epoch_loss_sums[k] / max(n_batches, 1) for k in loss_names}
+        avg_total      = epoch_total / max(n_batches, 1)
+        avg_train_iou  = epoch_iou_sum / max(epoch_n_images, 1)
+        current_lr     = optimizer.param_groups[0]["lr"]
 
         # always overwrite latest
         save_checkpoint('latest.pth', epoch)
@@ -462,7 +474,8 @@ def train(cfg, output_dir, val_every):
             visualize_train(model, train_viz_entries, epoch, output_dir, mean, std)
 
         # --- write metrics.csv ---
-        row = {'epoch': epoch, 'train_loss': round(avg_total, 6)}
+        row = {'epoch': epoch, 'train_loss': round(avg_total, 6),
+               'train_mask_iou': round(avg_train_iou, 6)}
         for k in loss_names:
             row['w_' + k] = round(avg_losses[k] * loss_weights[k], 6)
         row['val_loss'] = round(val_total, 6) if not np.isnan(val_total) else ''

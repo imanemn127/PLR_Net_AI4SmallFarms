@@ -66,7 +66,7 @@ def main():
         sys.exit(f"File not found: {csv_path}")
 
     df = pd.read_csv(csv_path, na_values=["", " "])
-    for col in ["epoch", "train_loss", "val_loss", "val_mask_iou"] + \
+    for col in ["epoch", "train_loss", "val_loss", "val_mask_iou", "train_mask_iou"] + \
                ["w_" + k for k in LOSS_NAMES] + \
                ["val_w_" + k for k in LOSS_NAMES]:
         if col in df.columns:
@@ -129,21 +129,30 @@ def main():
     ax.legend(fontsize=7)
     ax.grid(True, alpha=0.3)
 
-    # --- subplot 3 : val mask IoU ---
+    # --- subplot 3 : mask IoU (train vs val) ---
     ax = axes[3]
+    has_data = False
+    if "train_mask_iou" in df.columns:
+        train_iou_df = df.dropna(subset=["train_mask_iou"])
+        if len(train_iou_df):
+            ax.plot(train_iou_df["epoch"], train_iou_df["train_mask_iou"],
+                    color="steelblue", linewidth=1.2, alpha=0.7, label="Train mask IoU")
+            has_data = True
     if "val_mask_iou" in df.columns:
         iou_df = df.dropna(subset=["val_mask_iou"])
         if len(iou_df):
             ax.plot(iou_df["epoch"], iou_df["val_mask_iou"],
                     color="#2ca02c", linewidth=1.4,
                     marker="o", markersize=4, label="Val mask IoU")
-            ax.set_ylim(0, 1)
-        else:
-            ax.text(0.5, 0.5, "No IoU data yet",
-                    ha='center', va='center', transform=ax.transAxes, color='grey')
+            has_data = True
+    if has_data:
+        ax.set_ylim(0, 1)
+    else:
+        ax.text(0.5, 0.5, "No IoU data yet",
+                ha='center', va='center', transform=ax.transAxes, color='grey')
     ax.set_xlabel("Epoch")
     ax.set_ylabel("IoU")
-    ax.set_title("Val Mask IoU")
+    ax.set_title("Mask IoU (train vs val)")
     ax.legend(fontsize=8)
     ax.grid(True, alpha=0.3)
 

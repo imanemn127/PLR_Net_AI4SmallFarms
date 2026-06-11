@@ -514,6 +514,41 @@ chance, but not by much — it has not learned to produce confident, localised p
 - Root cause confirmed: the mask branch needs to separate adjacent parcels;
   the jloc branch needs more training time at a high learning rate → Test B
 
+### Run 8 (Test B) — scheduler `STEPS: (13,) → (60, 110)`, stopped at epoch 84
+
+Hypothesis: the LR drop at epoch 13 is too early and prevents the jloc branch from
+converging on the area50 dataset. Extending the high-LR phase to epoch 60 might help.
+
+| Change | Where | Why |
+|--------|-------|-----|
+| `STEPS: (13,) → (60, 110)` | `config-files/PLR-Net.yaml` | Keep LR at 1e-4 for 60 epochs instead of 13 |
+| `train_mask_iou` added to metrics | `scripts/train.py` | Track train/val IoU gap every epoch |
+
+| Loss (weighted) | Train (ep 1 → 84) | Val (ep 5 → 80) |
+|------|-------------------|-----------------|
+| total | 6.31 → 2.43 | 3.01 → 2.90 |
+| `w_loss_jloc` | 4.40 → 0.948 | 1.110 → 1.059 |
+| `w_loss_mask` | 0.647 → 0.386 | 0.636 → 0.647 |
+| `w_loss_afm` | 0.560 → 0.464 | 0.570 → 0.510 |
+| `w_loss_remask` | 0.700 → 0.633 | 0.693 → 0.685 |
+| `train_mask_iou` | 0.374 → 0.439 | — |
+| **`val_mask_iou`** | — | **0.416 (ep 5) → 0.449 (ep 80), best 0.454 (ep 25)** |
+
+**Diagnosis:** `val_w_loss_jloc` stays locked at ~1.05–1.11 throughout — identical to
+Run 7. The extra epochs at high LR had no effect on the junction branch. `train_mask_iou`
+(~0.41) and `val_mask_iou` (~0.44) stay close — no overfitting on the mask — but neither
+improves. Visually, the model still collapses adjacent Cambodia parcels into a few large
+blobs and produces coarse polygons on Vietnam. Run stopped at epoch 84.
+
+**Overall conclusion after Runs 1–8 and Tests A–B:**
+
+The bottleneck is structural, not a hyperparameter issue. PLR-Net was designed for GF-2
+at 0.8 m/px, where field corners are sharp and span several pixels. On Sentinel-2 at
+10 m/px, a 1-hectare parcel is ~10×10 px and its corners fall on 1–2 pixels. The jloc
+branch cannot reliably classify background / concave / convex at that scale. The mask
+branch finds rough foreground regions but cannot separate adjacent parcels because shared
+boundaries are sub-pixel. These are structural mismatches between the model and the data.
+
 ---
 
 ## Troubleshooting
