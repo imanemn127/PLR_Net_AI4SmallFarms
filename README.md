@@ -106,6 +106,7 @@ PLR-Net/
 │   ├── infer_one.py              single-image forward pass smoke test
 │   ├── train.py                  training loop (written for this adaptation)
 │   ├── test.py                   evaluation script
+│   ├── eval_testA.py             val-set inference: mask IoU, junction recall, snap rate
 │   └── plot_losses_plrnet_ai4sf.py  plot metrics.csv curves
 └── tools/
     ├── evaluation.py
@@ -224,12 +225,12 @@ OUTPUT_DIR/YYYY-MM-DD_HH-MM-SS/
 | `val_w_loss_*` | weighted component loss (val) |
 | `val_mask_iou` | mean IoU of `remask_pred` vs GT mask (threshold 0.5, val patches only) |
 
-### Loss weights (default)
+### Loss weights (current — Run 7 and onwards)
 
 | Loss | Weight | Role |
 |------|--------|------|
 | `loss_jloc` | 8.0 | junction classification — bg / concave / convex |
-| `loss_joff` | 0.25 | junction offset regression |
+| `loss_joff` | 0.0 | junction offset regression (disabled — see run history) |
 | `loss_mask` | 1.0 | binary segmentation mask BCE |
 | `loss_afm` | 0.1 | attraction field map L1 |
 | `loss_remask` | 1.0 | refined mask BCE |
@@ -464,6 +465,54 @@ is the key variable. After ep 15 it oscillates 0.39–0.45 with no upward trend.
 mask branch overfitting. The model fails on low-contrast uniform-texture patches (Cambodia
 small paddy grids): near-zero detections despite clear GT. IoU ceiling at ~0.45 is not a
 loss-weight issue.
+
+### Test A — post-processing only, no retraining (checkpoint epoch 95)
+
+The idea: before launching another training run, test whether tweaking the post-processing
+thresholds can recover some polygon quality from the existing Run 7 checkpoint.
+
+Two changes in `PLRNet/utils/polygon.py`:
+
+| Change | Before | After | Why |
+|--------|--------|-------|-----|
+| NMS score threshold | 0.008 | 0.004 | Try to recover corners the network predicts with low confidence |
+| Contour–junction matching distance | 5 px | 3 px | Avoid snapping to wrong junctions on neighbouring parcels |
+
+Evaluated on all 24 val images with `scripts/eval_testA.py` (epoch 95 checkpoint):
+
+| Metric | Value |
+|--------|-------|
+| Mean mask IoU | 0.399 |
+| Mean GT polygons / image | 283.4 |
+| Mean predicted polygons / image | 3.8 |
+| Junction candidates / image | 600 (hard cap, hit on every image) |
+| Snap rate | 1.00 |
+| Junction recall @3 px | 0.36 |
+| Junction recall @5 px | 0.54 |
+| Junction recall @8 px | 0.74 |
+
+**What the numbers mean:**
+
+The most striking thing is the gap between 3.8 predicted polygons and 283 GT polygons.
+The mask branch merges all adjacent parcels into a handful of large blobs — once the mask
+has merged them, there is no way to split them back out in post-processing. Snap rate = 1.00
+means each detected blob does find junctions nearby, so the matching step is not the problem.
+
+The NMS threshold change did nothing because the 600-candidate cap is already hit at 0.008.
+The network produces a diffuse heatmap with many weak activations rather than sharp peaks on
+real corners — so flooding it with more candidates at 0.004 just adds more noise, not better corners.
+
+Junction recall @3px = 0.36 with 600 candidates on a 256×256 image is barely better than
+random. If the predictions were uniformly random, you'd expect roughly one point every 11 px,
+giving ~0.30 recall at 3 px. So the jloc branch is placing corners slightly better than
+chance, but not by much — it has not learned to produce confident, localised predictions.
+
+**Actions taken after Test A:**
+
+- NMS threshold reverted to 0.008 (lowering had no effect, cap was already hit)
+- Matching threshold kept at 3 px (snap rate unaffected, no regression)
+- Root cause confirmed: the mask branch needs to separate adjacent parcels;
+  the jloc branch needs more training time at a high learning rate → Test B
 
 ---
 
